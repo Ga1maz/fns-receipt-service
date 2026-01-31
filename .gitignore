@@ -37,8 +37,10 @@ build/
 
 *
 
+!error.json
 !.gitignore
 !.env.example
 !package.json
 !README.md
 !server.js
+!LICENSE

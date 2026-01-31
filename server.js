@@ -3,16 +3,24 @@ import bodyParser from "body-parser";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import pkg from "lknpd-nalog-api";
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath } from "url";
 
 dotenv.config();
 
 const { NalogApi } = pkg;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 4000;
 const MAX_RETRIES = 3;
+const ERROR_FILE = path.join(__dirname, "error.json");
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
@@ -38,6 +46,68 @@ async function createReceiptWithRetry(income, retries = MAX_RETRIES) {
       if (attempt === retries) throw err;
       await new Promise(r => setTimeout(r, 2000));
     }
+  }
+}
+
+async function saveToErrorFile(errorData) {
+  try {
+    let errors = [];
+    
+    try {
+      const data = await fs.readFile(ERROR_FILE, "utf8");
+      const parsedData = JSON.parse(data);
+      if (Array.isArray(parsedData)) {
+        errors = parsedData;
+      }
+    } catch (err) {
+    }
+    
+    errors.push({
+      ...errorData,
+      timestamp: new Date().toISOString(),
+      retryAttempt: 0
+    });
+    
+    await fs.writeFile(ERROR_FILE, JSON.stringify(errors, null, 2));
+    console.log(`Ошибка сохранена в ${ERROR_FILE}`);
+  } catch (err) {
+    console.error("Не удалось сохранить ошибку в файл:", err);
+  }
+}
+
+async function notifyAdmin(errorData) {
+  try {
+    const html = `
+<!DOCTYPE HTML>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Ошибка создания чека</title>
+</head>
+<body>
+<h2>⚠️ Ошибка при создании чека</h2>
+<p><b>Время:</b> ${new Date().toLocaleString()}</p>
+<p><b>Email клиента:</b> ${errorData.email}</p>
+<p><b>Сумма:</b> ${errorData.amount} ₽</p>
+<p><b>Ошибка:</b> ${errorData.error}</p>
+<p><b>Данные заказа:</b></p>
+<pre>${JSON.stringify(errorData.items, null, 2)}</pre>
+<p>Ошибка сохранена в error.json для последующей обработки.</p>
+<p>Пробейте чек вручную через приложение Мой налог и вручную отправте клиенту чек по email.</p>
+</body>
+</html>
+`;
+
+    await transporter.sendMail({
+      from: process.env.SMTP_MAIL_FROM,
+      to: ADMIN_EMAIL,
+      subject: `Ошибка создания чека ${process.env.APPNAME}`,
+      html
+    });
+    
+    console.log(`Администратор ${ADMIN_EMAIL} уведомлен об ошибке`);
+  } catch (err) {
+    console.error("Не удалось отправить уведомление администратору:", err);
   }
 }
 
@@ -166,11 +236,27 @@ ${process.env.APPNAME}
     });
 
   } catch (err) {
-    console.error("Ошибка:", err);
-    res.status(500).json({ error: "Не удалось создать чек" });
+    console.error("Ошибка создания чека:", err);
+    
+    const errorData = {
+      email: req.body.email,
+      items: req.body.items,
+      amount: req.body.items.reduce((sum, i) => sum + i.price * (i.quantity || 1), 0),
+      error: err.message || "Неизвестная ошибка",
+      api_pass: req.body.api_pass
+    };
+    
+    await saveToErrorFile(errorData);
+    await notifyAdmin(errorData);
+    
+    res.status(500).json({ 
+      error: "Не удалось создать чек. Данные сохранены для повторной попытки.",
+      saved_to_error_file: true
+    });
   }
 });
 
 app.listen(PORT, () => {
   console.log(`✅ Сервер запущен: http://localhost:${PORT}`);
+  console.log(`📁 Файл ошибок: ${ERROR_FILE}`);
 });
