@@ -293,6 +293,9 @@ GET /health
 **Нужно ли хранить `receiptId`?**
 Рекомендуется для поддержки клиентов и учёта.
 
+**Где получить пароль?**
+На сайте: https://lkfl2.nalog.ru/lkfl/profile-settings/common/security
+
 **Нужен ли IP РФ?**
 Да, API ФНС работает только с IP РФ.
 
